@@ -1,22 +1,12 @@
-# chrx
+# CRAP
 
-Install Linux onto your Chromebook. Dual-boot alongside ChromeOS for maximum flexibility.
-
+Note: This is a project forked from ([github.com/reynhout/chrx](https://github.com/reynhout/chrx)). We are simply updating it to work with modern chromebooks. This does not have the Linux Install feature, you will have to linux yourself. 
 
 | | |
 | ------------ | ---------- |
-|**works on**|Most Chromebook models. See [chromebooks](#chromebooks).|
-|**installs**|Several Linux distributions. See [operating systems](#operating-systems) and [recommendations](#recommendations).|
+|**works on**|Most Chromebook models. See [Docs](https://chrultrabook.github.io/docs/docs/supported-devices.html).|
 
 
-
-**[chrx.org](https://chrx.org/)**
-<br />
-**[github.com/reynhout/chrx](https://github.com/reynhout/chrx)**
-
-## status
-
-**Version 3.0.2** See [changelog](#changelog).
 
 
 <a name="usage"></a>
@@ -26,11 +16,7 @@ Installing Linux via **chrx** onto a new (or freshly recovered) Chromebook
 
 - The first phase reserves space on your storage device for
 the new operating system, **and then reboots**.
-- The second phase installs your chosen distribution, and configures the
-new system according to your selected options.
 
-If you reinstall later, or switch to a another distribution, **chrx** will
-skip directly to phase two.
 
 
 <a name="step-by-step"></a>
@@ -43,12 +29,11 @@ skip directly to phase two.
     * Configure Wi-Fi and log in (Guest account is fine)
     * Open ChromeOS Terminal by pressing `CTRL+ALT+T`, and entering `shell` at the prompt
 1. **Update firmware, if necessary** -- see [chromebooks](#chromebooks)
-    * ***required*** for Bay Trail, Braswell, and Apollo Lake models
-    * ***recommended*** for Broadwell, Skylake, and Kaby Lake models
-    * ***optional*** for Haswell models
-1. **Download and run chrx**
     * Open Virtual Terminal 2 using ```[ Ctrl ] [ Alt ] [ → ]```
-    * *add install here*
+    * run MrChromebox's Firmware Utility Script see ([Firmware Script](https://mrchromebox.tech/#fwscript))
+    * Select ```Install/Update RW_LEGACY Firmware```
+1. **Download and run chrx**
+    * *add install link here*
 1. **Follow on-screen instructions** to allocate storage space for Linux
     * CRAP will suggest dedicating as much space as possible to Linux, and as little as necessary for ChromeOS. Choose your allocation ratio according to your personal requirements and preferences!
 
