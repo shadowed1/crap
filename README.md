@@ -4,7 +4,7 @@ Note: This is a project forked from ([github.com/reynhout/chrx](https://github.c
 
 | | |
 | ------------ | ---------- |
-|**works on**|Most Chromebook models. See [Docs](https://chrultrabook.github.io/docs/docs/supported-devices.html).|
+|**works on**|All Chromebook models. See [Docs](https://chrultrabook.github.io/docs/docs/supported-devices.html).|
 
 
 
