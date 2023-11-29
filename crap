@@ -1,12 +1,11 @@
 #!/bin/bash
 #
-# setup_storage
+# CRAP
+# https://github.com/chrultrabook/crap
 #
-# This script is _sourced_ from install-chrx (not exec'ed),
-# so all functions and variables from there are available.
-#
-# It cannot be run directly from the commandline.
-#
+
+echo "WIP"
+exit
 
 eval_try umount -R ${CHRX_INSTALL_ROOT} 2>/dev/null ## be safe.
 
