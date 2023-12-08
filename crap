@@ -3,8 +3,28 @@
 # ChromeOS Automated Partitioning (CRAP)
 # https://github.com/chrultrabook/crap
 #
+# Thanks to the following projects/files for reference:
+# https://github.com/MrChromebox/scripts
+# https://chromium.googlesource.com/chromiumos/platform2/+/main/chromeos-common-script/share/chromeos-common.sh
+# https://github.com/reynhout/chrx/blob/master/chrx-setup-storage
+# https://gist.github.com/bendavis78/5929b46efd26232d7e9e
+#
 
-set -e
+set -eE
+
+# optional variables
+TESTING=1
+
+# internal variables
+COLOR_RESET="\033[0m"
+COLOR_BLACK_B="\033[1;30m"
+COLOR_RED_B="\033[1;31m"
+COLOR_GREEN_B="\033[1;32m"
+COLOR_YELLOW_B="\033[1;33m"
+COLOR_BLUE_B="\033[1;34m"
+COLOR_MAGENTA_B="\033[1;35m"
+COLOR_CYAN_B="\033[1;36m"
+CHAR_CHECK="\u2713"
 
 fail() {
 	printf "%s\n" "$*" >&2
@@ -13,6 +33,11 @@ fail() {
 
 readlink /proc/$$/exe | grep -q bash || fail "Please run with bash"
 [ "$EUID" -ne 0 ] && fail "Please run as root"
+readlink /proc/$PPID/exe | grep -q crosh && fail "Please run from a VT, not from crosh. Press [ Ctrl ] [ Alt ] [ -> ] (F2) to switch to VT2."
+
+format_bytes() {
+	numfmt --to=iec-i --suffix=B "$@"
+}
 
 get_largest_blockdev() {
 	local largest size dev_name tmp_size remo
@@ -39,7 +64,7 @@ get_largest_cros_blockdev() {
 		tmp_size=$(cat "$blockdev"/size)
 		remo=$(cat "$blockdev"/removable)
 		if [ "$tmp_size" -gt "$size" ] && [ "${remo:-0}" -eq 0 ]; then
-			case "$(fdisk -l -o name "/dev/$dev_name" 2>/dev/null)" in
+			case "$(sfdisk -l -o name "/dev/$dev_name" 2>/dev/null)" in
 				*STATE*KERN-A*ROOT-A*KERN-B*ROOT-B*)
 					largest="/dev/$dev_name"
 					size="$tmp_size"
@@ -50,50 +75,223 @@ get_largest_cros_blockdev() {
 	echo "$largest"
 }
 
-resize_stateful_menu() {
-	echo "${FUNCNAME[0]}"
+format_part_number() {
+	echo -n "$1"
+	echo "$1" | grep -q '[0-9]$' && echo -n p
+	echo "$2"
 }
 
-check_1s_parts() {
-	echo "${FUNCNAME[0]}"
+clear_screen() {
+	clear
+	echo ""
+}
+
+unmount_stateful() {
+	[ "$TESTING" -eq 1 ] && return
+	grep -q "^$STATEFUL_PART" /proc/mounts || return
+	echo "Unmounting stateful"
+	cryptohome --action=unmount >/dev/null || :
+	initctl stop ui >/dev/null || :
+	initctl stop cryptohomed >/dev/null || :
+
+	# /var and /mnt/stateful_partition will never unmount cleanly.
+	# try normal umount first, then lazy if that fails.
+	if grep -q "^/dev/mapper/encstateful" /proc/mounts; then
+		umount -A /dev/mapper/encstateful &>/dev/null || :
+		umount -Al /dev/mapper/encstateful &>/dev/null || :
+	fi
+	umount -A "$STATEFUL_PART" &>/dev/null || :
+	umount -Al "$STATEFUL_PART"
+
+	if grep -q "^$STATEFUL_PART" /proc/mounts; then
+		return 1
+	fi
+	echo "Unmounted successfully"
+}
+
+refresh_stateful() {
+	local stateful_start all_starts
+	STATEFUL_SECTORS=$(cgpt show -i 1 -s -n -q "$CRAP_DISK")
+	STATEFUL_SIZE=$((CRAP_DISK_SECTOR_SIZE * STATEFUL_SECTORS))
+	STATEFUL_SIZE_HR=$(format_bytes "$STATEFUL_SIZE")
+	stateful_start=$(cgpt show -i 1 -b -n -q "$CRAP_DISK")
+	# important to not use -q here
+	all_starts=($(cgpt show "$CRAP_DISK" | grep "^\s*[0-9]" | awk '{print $1}' | sort -n))
+	for i in "${!all_starts[@]}"; do
+		if [ "${all_starts[$i]}" = "$stateful_start" ]; then
+			STATEFUL_NEXT_USED_SECTOR="${all_starts[$((i + 1))]}"
+			break
+		fi
+	done
+	if STATEFUL_TUNE2FS=$(tune2fs -l "$STATEFUL_PART" 2>&1); then
+		STATEFUL_VALID_FS=1
+		STATEFUL_BLOCK_SIZE=$(echo "$STATEFUL_TUNE2FS" | grep "Block size" | awk '{print $3}')
+		STATEFUL_MIN_BLOCKS=$(resize2fs -P "$STATEFUL_PART" 2>/dev/null | grep "Estimated minimum size" | awk '{print $NF}')
+		STATEFUL_FS_USAGE=$((STATEFUL_BLOCK_SIZE * STATEFUL_MIN_BLOCKS))
+		STATEFUL_FS_USAGE_HR="$(format_bytes "$STATEFUL_FS_USAGE") ($(((STATEFUL_FS_USAGE / (STATEFUL_SIZE / 100))))%)"
+	else
+		STATEFUL_VALID_FS=
+		STATEFUL_BLOCK_SIZE=
+		STATEFUL_MIN_BLOCKS=
+		STATEFUL_FS_USAGE=
+		STATEFUL_FS_USAGE_HR=
+	fi
+}
+
+wait_on_enter() {
+	echo "Press enter to return to the main menu."
+	read -res
+}
+
+resize_stateful_menu() {
+	clear_screen
+	if ! unmount_stateful; then
+		echo "Failed to unmount stateful."
+		echo "Press enter to return to the main menu."
+		read -res
+		return
+	fi
+	refresh_stateful
+	echo "Disk size: $CRAP_DISK_SIZE_HR"
+	echo "Stateful size: $STATEFUL_SIZE_HR"
+	[ "$STATEFUL_VALID_FS" -eq 1 ] && echo "Stateful FS usage: $STATEFUL_FS_USAGE_HR"
+
+	# todo: get minimum and maximum possible stateful size
+
+	refresh_stateful
+	wait_on_enter
+}
+
+check_1s_parts_need_fix() {
+	if cgpt show -q "$CRAP_DISK" | awk '{if ($2 == 1) print $1}' | sort -nc &>/dev/null; then
+		NEEDS_1S_FIX=0
+	else
+		NEEDS_1S_FIX=1
+	fi
 }
 
 fix_1s_parts() {
-	echo "${FUNCNAME[0]}"
+	local p1s_n neededgap allgaps gapstart
+	clear_screen
+	check_1s_parts_need_fix
+	if [ "$NEEDS_1S_FIX" -eq 0 ]; then
+		echo "You do not appear to need the fix,"
+		echo "but if you are having issues you can choose to force it."
+		echo -e "${COLOR_CYAN_B}Would you like to force the fix? ${COLOR_YELLOW_B}(y/N)${COLOR_RESET}"
+		read -re action
+		case "$action" in
+			[yY]) : ;;
+			*) return ;;
+		esac
+	fi
+
+	echo "Reordering partitions..."
+
+	p1s_n=($(cgpt show -q "$CRAP_DISK" | awk '{if ($2 == 1) print $3}'))
+	# 1 extra sector needed after, but not before
+	neededgap=$((${#p1s_n[@]} + 1))
+	gapstart=
+	if allgaps=$(sfdisk -F "$CRAP_DISK" | grep "^\s*[0-9]"); then
+		while read gap; do
+			if [ "$(echo "$gap" | awk '{print $3}')" -ge "$neededgap" ]; then
+				gapstart=$(echo "$gap" | awk '{print $1}')
+				break
+			fi
+		done <<<"$allgaps"
+	fi
+	if [ -z "$gapstart" ]; then
+		echo -e "${COLOR_RED_B}Not enough unpartitioned space on disk. Cannot continue.${COLOR_RESET}"
+		wait_on_enter
+		return
+	fi
+
+	for i in "${!p1s_n[@]}"; do
+		cgpt add -i "${p1s_n[$i]}" -b "$((gapstart + $i))" -s 1 "$CRAP_DISK"
+	done
+
+	check_1s_parts_need_fix
+	if [ "$NEEDS_1S_FIX" -eq 0 ]; then
+		echo "Success."
+	else
+		echo -e "${COLOR_RED_B}An error occured and the partitions were not properly reordered."
+		echo -e "Current partition table is shown below:${COLOR_RESET}"
+		sfdisk -l "$CRAP_DISK"
+	fi
+	wait_on_enter
 }
 
+# todo: implement this maybe?
 check_1s_parts_prompt() {
-	echo "${FUNCNAME[0]}"
+	check_1s_parts_need_fix
+	[ "$NEEDS_1S_FIX" -eq 0 ] && return
+	clear_screen
+	echo "You need the fix"
+	wait_on_enter
+}
+
+cleanup_and_exit() {
+	[ "$TESTING" -eq 1 ] && losetup -d "$CRAP_DISK"
+	trap - EXIT
+	exit
 }
 
 menu() {
 	while true; do
-		clear
-		echo ""
-		echo " ChromeOS Automated Partitioning (CRAP)"
-		echo " https://github.com/chrultrabook/crap"
-		echo "╔═════════════════════════════════════════╗"
-		echo "║ Disk: $(printf "%-33.33s" "$CRAP_DISK") ║"
-		echo "╠═════════════════════════════════════════╣"
-		echo "║ 1) Resize stateful partition            ║"
-		echo "║ 2) Reorder 1s parts                     ║"
-		echo "║ Q) Quit                                 ║"
-		echo "╚═════════════════════════════════════════╝"
-		echo "Select an option:"
+		clear_screen
+		echo -e " ChromeOS Automated Partitioning (CRAP)"
+		echo -e " https://github.com/chrultrabook/crap"
+		echo -e "╔════════════════════════════════════════════════════════════════════╗"
+		echo -e "║ Disk: $(printf "%-60.60s" "$CRAP_DISK") ║"
+		echo -e "║ Disk size: $(printf "%-55.55s" "$CRAP_DISK_SIZE_HR") ║"
+		echo -e "║ Stateful size: $(printf "%-51.51s" "$STATEFUL_SIZE_HR") ║"
+		[ "$STATEFUL_VALID_FS" -eq 1 ] && echo -e "║ Stateful FS usage: $(printf "%-47.47s" "$STATEFUL_FS_USAGE_HR") ║"
+		echo -e "╠════════════════════════════════════════════════════════════════════╣"
+		echo -e "║ ${COLOR_YELLOW_B}1) ${COLOR_CYAN_B}Resize stateful partition${COLOR_RESET}                                       ║"
+		echo -e "║    Resize the ChromeOS user data partition to make space for an    ║"
+		echo -e "║    alternate OS.                                                   ║"
+		if [ "$NEEDS_1S_FIX" -eq 1 ]; then
+			echo -e "║ ${COLOR_YELLOW_B}2) ${COLOR_CYAN_B}Reorder 1-sector partitions${COLOR_RESET}                                     ║"
+			echo -e "║    Fix a bug that causes libparted to error and be unable to       ║"
+			echo -e "║    detect existing partitions. Highly recommended.                 ║"
+		else
+			echo -e "║ ${COLOR_BLACK_B}2) Reorder 1-sector partitions${COLOR_GREEN_B} ${CHAR_CHECK}${COLOR_RESET}                                   ║"
+			echo -e "║    ${COLOR_BLACK_B}Fix a bug that causes libparted to error and be unable to${COLOR_RESET}       ║"
+			echo -e "║    ${COLOR_BLACK_B}detect existing partitions. Highly recommended.${COLOR_RESET}                 ║"
+		fi
+		echo -e "║ ${COLOR_YELLOW_B}Q) ${COLOR_CYAN_B}Quit${COLOR_RESET}                                                            ║"
+		echo -e "╚════════════════════════════════════════════════════════════════════╝"
+		echo -e "Select an option:"
 		read -re action
 		case "$action" in
 			1) resize_stateful_menu ;;
 			2) fix_1s_parts ;;
-			[qQ]) break ;;
+			[qQ]) cleanup_and_exit ;;
 		esac
 	done
 }
 
-#CRAP_DISK="$(get_largest_cros_blockdev)"
-#[ -z "$CRAP_DISK" ] && fail "No SSD found on device!"
+if [ "$TESTING" -eq 1 ]; then
+	[ -f "$1" ] || fail "$1 doesn't exist or isn't a file"
+	CRAP_DISK=$(losetup -f)
+	losetup -P "$CRAP_DISK" "$1"
+else
+	CRAP_DISK="$(get_largest_cros_blockdev)"
+	[ -z "$CRAP_DISK" ] && fail "No CrOS SSD found on device!"
+fi
 
-CRAP_DISK=test.bin
-[ -f "$CRAP_DISK" ] || fail "$CRAP_DISK doesn't exist or isn't a file"
+trap 'echo $BASH_COMMAND failed with exit code $?' ERR
+trap cleanup_and_exit EXIT
 
-check_1s_parts_prompt
+CRAP_DISK_SECTOR_SIZE=$(blockdev --getss "$CRAP_DISK")
+CRAP_DISK_SECTORS=$(blockdev --getsz "$CRAP_DISK")
+CRAP_DISK_SIZE=$((CRAP_DISK_SECTOR_SIZE * CRAP_DISK_SECTORS))
+CRAP_DISK_SIZE_HR=$(format_bytes "$CRAP_DISK_SIZE")
+
+STATEFUL_PART=$(format_part_number "$CRAP_DISK" 1)
+refresh_stateful
+
+[ "$TESTING" -eq 0 ] && initctl stop powerd &>/dev/null || :
+
+#check_1s_parts_prompt
+check_1s_parts_need_fix
 menu
