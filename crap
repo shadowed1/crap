@@ -13,7 +13,8 @@
 set -eE
 
 # optional variables
-TESTING=1
+[ -z "$CRAP_TESTING" ] && CRAP_TESTING=0
+[ -z "$CRAP_DEBUG" ] && CRAP_DEBUG=0
 
 # internal variables
 COLOR_RESET="\033[0m"
@@ -27,8 +28,12 @@ COLOR_CYAN_B="\033[1;36m"
 CHAR_CHECK="\u2713"
 
 fail() {
-	printf "%s\n" "$*" >&2
+	printf "${COLOR_RED_B}%s\n" "$*" >&2 || :
 	exit 1
+}
+
+log_debug() {
+	[ "$CRAP_DEBUG" -eq 1 ] && printf "%s\n" "$*" >&2 || :
 }
 
 readlink /proc/$$/exe | grep -q bash || fail "Please run with bash"
@@ -86,8 +91,13 @@ clear_screen() {
 	echo ""
 }
 
+wait_on_enter() {
+	echo "Press enter to return to the main menu."
+	read -res
+}
+
 unmount_stateful() {
-	[ "$TESTING" -eq 1 ] && return
+	[ "$CRAP_TESTING" -eq 1 ] && return
 	grep -q "^$STATEFUL_PART" /proc/mounts || return
 	echo "Unmounting stateful"
 	cryptohome --action=unmount >/dev/null || :
@@ -130,17 +140,12 @@ refresh_stateful() {
 		STATEFUL_FS_USAGE=$((STATEFUL_BLOCK_SIZE * STATEFUL_MIN_BLOCKS))
 		STATEFUL_FS_USAGE_HR="$(format_bytes "$STATEFUL_FS_USAGE") ($(((STATEFUL_FS_USAGE / (STATEFUL_SIZE / 100))))%)"
 	else
-		STATEFUL_VALID_FS=
+		STATEFUL_VALID_FS=0
 		STATEFUL_BLOCK_SIZE=
 		STATEFUL_MIN_BLOCKS=
 		STATEFUL_FS_USAGE=
 		STATEFUL_FS_USAGE_HR=
 	fi
-}
-
-wait_on_enter() {
-	echo "Press enter to return to the main menu."
-	read -res
 }
 
 resize_stateful_menu() {
@@ -162,55 +167,102 @@ resize_stateful_menu() {
 	wait_on_enter
 }
 
+# try to accurately detect/mimic the problematic behavior of libparted
 check_1s_parts_need_fix() {
-	if cgpt show -q "$CRAP_DISK" | awk '{if ($2 == 1) print $1}' | sort -nc &>/dev/null; then
-		NEEDS_1S_FIX=0
-	else
-		NEEDS_1S_FIX=1
+	local part_table part_starts physical_part_table needs_move you_do_it this_num this_start this_size next_num next_start next_size
+	part_table=$(cgpt show -q -n "$CRAP_DISK")
+	part_starts=$(echo "$part_table" | awk '{print $1}' | sort -n)
+	physical_part_table=()
+	for part in $part_starts; do
+		physical_part_table+=("$(echo "$part_table" | grep "^\s*${part}\s")")
+	done
+
+	needs_move=()
+	you_do_it=0
+	for i in "${!physical_part_table[@]}"; do
+		this_num=$(echo "${physical_part_table[$i]}" | awk '{print $3}')
+		if [ "$you_do_it" -eq 1 ]; then
+			log_debug "[accepting defer: $this_num]"
+			needs_move+=("$this_num")
+			you_do_it=0
+			continue
+		fi
+		this_start=$(echo "${physical_part_table[$i]}" | awk '{print $1}')
+		this_size=$(echo "${physical_part_table[$i]}" | awk '{print $2}')
+		next_num=$(echo "${physical_part_table[$((i + 1))]}" | awk '{print $3}')
+		next_start=$(echo "${physical_part_table[$((i + 1))]}" | awk '{print $1}')
+		next_size=$(echo "${physical_part_table[$((i + 1))]}" | awk '{print $2}')
+		log_debug "me:   ${physical_part_table[$i]}"
+		log_debug "next: ${physical_part_table[$((i + 1))]}"
+		if [ -n "$next_num" ] && [ "$next_num" -lt "$this_num" ] && [ "$this_size" -eq 1 ] && [ "$next_start" -eq "$((this_start + 1))" ]; then
+			log_debug "[problem]"
+			# defer to next partition
+			if [ "$next_size" -eq 1 ]; then
+				log_debug "[deferring]"
+				you_do_it=1
+				continue
+			fi
+			log_debug "[not deferring: $this_num]"
+			needs_move+=("$this_num")
+		else
+			log_debug "[no problem]"
+		fi
+	done
+	log_debug "[needs move]: ${needs_move[@]}"
+
+	NEEDS_1S_FIX=$(printf '%s\n' "${needs_move[@]}" | sort -n)
+}
+
+find_unallocated_sectors() {
+	local allgaps
+	if allgaps=$(sfdisk -F "$1" | grep "^\s*[0-9]"); then
+		while read gap; do
+			if [ "$(echo "$gap" | awk '{print $3}')" -ge "$2" ]; then
+				echo "$gap" | awk '{print $1}'
+				return
+			fi
+		done <<<"$allgaps"
 	fi
+	return 1
 }
 
 fix_1s_parts() {
-	local p1s_n neededgap allgaps gapstart
+	local p1s_n gapstart
 	clear_screen
 	check_1s_parts_need_fix
-	if [ "$NEEDS_1S_FIX" -eq 0 ]; then
+	if [ -z "$NEEDS_1S_FIX" ]; then
 		echo "You do not appear to need the fix,"
 		echo "but if you are having issues you can choose to force it."
 		echo -e "${COLOR_CYAN_B}Would you like to force the fix? ${COLOR_YELLOW_B}(y/N)${COLOR_RESET}"
 		read -re action
 		case "$action" in
-			[yY]) : ;;
+			[yY]) p1s_n=($(cgpt show -q -n "$CRAP_DISK" | awk '{if ($2 == 1) print $3}')) ;;
 			*) return ;;
 		esac
+	else
+		p1s_n=($NEEDS_1S_FIX)
 	fi
 
-	echo "Reordering partitions..."
-
-	p1s_n=($(cgpt show -q "$CRAP_DISK" | awk '{if ($2 == 1) print $3}'))
 	# 1 extra sector needed after, but not before
-	neededgap=$((${#p1s_n[@]} + 1))
-	gapstart=
-	if allgaps=$(sfdisk -F "$CRAP_DISK" | grep "^\s*[0-9]"); then
-		while read gap; do
-			if [ "$(echo "$gap" | awk '{print $3}')" -ge "$neededgap" ]; then
-				gapstart=$(echo "$gap" | awk '{print $1}')
-				break
-			fi
-		done <<<"$allgaps"
-	fi
+	gapstart=$(find_unallocated_sectors "$CRAP_DISK" "$((${#p1s_n[@]} + 1))") || :
 	if [ -z "$gapstart" ]; then
 		echo -e "${COLOR_RED_B}Not enough unpartitioned space on disk. Cannot continue.${COLOR_RESET}"
 		wait_on_enter
 		return
 	fi
 
+	log_debug "parts to move: ${p1s_n[@]}"
+	log_debug "gap min: $((${#p1s_n[@]} + 1))"
+	log_debug "gap start: $gapstart"
+
+	echo "Reordering partitions..."
 	for i in "${!p1s_n[@]}"; do
+		log_debug cgpt add -i "${p1s_n[$i]}" -b "$((gapstart + $i))" -s 1 "$CRAP_DISK"
 		cgpt add -i "${p1s_n[$i]}" -b "$((gapstart + $i))" -s 1 "$CRAP_DISK"
 	done
 
 	check_1s_parts_need_fix
-	if [ "$NEEDS_1S_FIX" -eq 0 ]; then
+	if [ -z "$NEEDS_1S_FIX" ]; then
 		echo "Success."
 	else
 		echo -e "${COLOR_RED_B}An error occured and the partitions were not properly reordered."
@@ -223,14 +275,14 @@ fix_1s_parts() {
 # todo: implement this maybe?
 check_1s_parts_prompt() {
 	check_1s_parts_need_fix
-	[ "$NEEDS_1S_FIX" -eq 0 ] && return
+	[ -z "$NEEDS_1S_FIX" ] && return
 	clear_screen
 	echo "You need the fix"
 	wait_on_enter
 }
 
 cleanup_and_exit() {
-	[ "$TESTING" -eq 1 ] && losetup -d "$CRAP_DISK"
+	[ "$CRAP_TESTING" -eq 1 ] && losetup -d "$CRAP_DISK"
 	trap - EXIT
 	exit
 }
@@ -249,14 +301,16 @@ menu() {
 		echo -e "║ ${COLOR_YELLOW_B}1) ${COLOR_CYAN_B}Resize stateful partition${COLOR_RESET}                                       ║"
 		echo -e "║    Resize the ChromeOS user data partition to make space for an    ║"
 		echo -e "║    alternate OS.                                                   ║"
-		if [ "$NEEDS_1S_FIX" -eq 1 ]; then
+		if [ -n "$NEEDS_1S_FIX" ]; then
 			echo -e "║ ${COLOR_YELLOW_B}2) ${COLOR_CYAN_B}Reorder 1-sector partitions${COLOR_RESET}                                     ║"
 			echo -e "║    Fix a bug that causes libparted to error and be unable to       ║"
-			echo -e "║    detect existing partitions. Highly recommended.                 ║"
+			echo -e "║    detect existing partitions. Highly recommended before           ║"
+			echo -e "║    installing linux alongside ChromeOS.                            ║"
 		else
 			echo -e "║ ${COLOR_BLACK_B}2) Reorder 1-sector partitions${COLOR_GREEN_B} ${CHAR_CHECK}${COLOR_RESET}                                   ║"
 			echo -e "║    ${COLOR_BLACK_B}Fix a bug that causes libparted to error and be unable to${COLOR_RESET}       ║"
-			echo -e "║    ${COLOR_BLACK_B}detect existing partitions. Highly recommended.${COLOR_RESET}                 ║"
+			echo -e "║    ${COLOR_BLACK_B}detect existing partitions. Highly recommended before${COLOR_RESET}           ║"
+			echo -e "║    ${COLOR_BLACK_B}installing linux alongside ChromeOS.${COLOR_RESET}                            ║"
 		fi
 		echo -e "║ ${COLOR_YELLOW_B}Q) ${COLOR_CYAN_B}Quit${COLOR_RESET}                                                            ║"
 		echo -e "╚════════════════════════════════════════════════════════════════════╝"
@@ -270,7 +324,7 @@ menu() {
 	done
 }
 
-if [ "$TESTING" -eq 1 ]; then
+if [ "$CRAP_TESTING" -eq 1 ]; then
 	[ -f "$1" ] || fail "$1 doesn't exist or isn't a file"
 	CRAP_DISK=$(losetup -f)
 	losetup -P "$CRAP_DISK" "$1"
@@ -290,7 +344,7 @@ CRAP_DISK_SIZE_HR=$(format_bytes "$CRAP_DISK_SIZE")
 STATEFUL_PART=$(format_part_number "$CRAP_DISK" 1)
 refresh_stateful
 
-[ "$TESTING" -eq 0 ] && initctl stop powerd &>/dev/null || :
+[ "$CRAP_TESTING" -eq 0 ] && initctl stop powerd &>/dev/null || :
 
 #check_1s_parts_prompt
 check_1s_parts_need_fix
