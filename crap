@@ -21,6 +21,7 @@ COLOR_RESET="\033[0m"
 COLOR_BLACK_B="\033[1;30m"
 COLOR_RED_B="\033[1;31m"
 COLOR_GREEN_B="\033[1;32m"
+COLOR_YELLOW="\033[33m"
 COLOR_YELLOW_B="\033[1;33m"
 COLOR_BLUE_B="\033[1;34m"
 COLOR_MAGENTA_B="\033[1;35m"
@@ -36,12 +37,33 @@ log_debug() {
 	[ "$CRAP_DEBUG" -eq 1 ] && printf "%s\n" "$*" >&2 || :
 }
 
+suppress() {
+	if [ "$CRAP_DEBUG" -eq 1 ]; then
+		$@
+	else
+		$@ &>/dev/null
+	fi
+}
+
+suppress_out() {
+	if [ "$CRAP_DEBUG" -eq 1 ]; then
+		$@
+	else
+		$@ >/dev/null
+	fi
+}
+
 readlink /proc/$$/exe | grep -q bash || fail "Please run with bash"
 [ "$EUID" -ne 0 ] && fail "Please run as root"
 readlink /proc/$PPID/exe | grep -q crosh && fail "Please run from a VT, not from crosh. Press [ Ctrl ] [ Alt ] [ -> ] (F2) to switch to VT2."
 
 format_bytes() {
 	numfmt --to=iec-i --suffix=B "$@"
+}
+
+blkrrpart() {
+	# do nothing but reload partition table
+	sfdisk "$1" </dev/null &>/dev/null
 }
 
 get_largest_blockdev() {
@@ -92,6 +114,11 @@ clear_screen() {
 }
 
 wait_on_enter() {
+	echo "Press enter."
+	read -res
+}
+
+wait_on_enter_menu() {
 	echo "Press enter to return to the main menu."
 	read -res
 }
@@ -100,18 +127,18 @@ unmount_stateful() {
 	[ "$CRAP_TESTING" -eq 1 ] && return
 	grep -q "^$STATEFUL_PART" /proc/mounts || return
 	echo "Unmounting stateful"
-	cryptohome --action=unmount >/dev/null || :
-	initctl stop ui >/dev/null || :
-	initctl stop cryptohomed >/dev/null || :
+	suppress_out cryptohome --action=unmount || :
+	suppress_out initctl stop ui || :
+	suppress_out initctl stop cryptohomed || :
 
 	# /var and /mnt/stateful_partition will never unmount cleanly.
 	# try normal umount first, then lazy if that fails.
 	if grep -q "^/dev/mapper/encstateful" /proc/mounts; then
-		umount -A /dev/mapper/encstateful &>/dev/null || :
-		umount -Al /dev/mapper/encstateful &>/dev/null || :
+		suppress umount -A /dev/mapper/encstateful || :
+		suppress umount -Al /dev/mapper/encstateful || :
 	fi
-	umount -A "$STATEFUL_PART" &>/dev/null || :
-	umount -Al "$STATEFUL_PART"
+	suppress umount -A "$STATEFUL_PART" || :
+	suppress_out umount -Al "$STATEFUL_PART"
 
 	if grep -q "^$STATEFUL_PART" /proc/mounts; then
 		return 1
@@ -121,24 +148,26 @@ unmount_stateful() {
 
 refresh_stateful() {
 	local stateful_start all_starts
-	STATEFUL_SECTORS=$(cgpt show -i 1 -s -n -q "$CRAP_DISK")
-	STATEFUL_SIZE=$((CRAP_DISK_SECTOR_SIZE * STATEFUL_SECTORS))
-	STATEFUL_SIZE_HR=$(format_bytes "$STATEFUL_SIZE")
 	stateful_start=$(cgpt show -i 1 -b -n -q "$CRAP_DISK")
 	# important to not use -q here
 	all_starts=($(cgpt show "$CRAP_DISK" | grep "^\s*[0-9]" | awk '{print $1}' | sort -n))
 	for i in "${!all_starts[@]}"; do
 		if [ "${all_starts[$i]}" = "$stateful_start" ]; then
-			STATEFUL_NEXT_USED_SECTOR="${all_starts[$((i + 1))]}"
+			STATEFUL_MAX_SECTORS=$(("${all_starts[$((i + 1))]}" - stateful_start - 1))
+			STATEFUL_MAX_SIZE=$((CRAP_DISK_SECTOR_SIZE * STATEFUL_MAX_SECTORS))
+			STATEFUL_MAX_SIZE_HR=$(format_bytes "$STATEFUL_MAX_SIZE")
 			break
 		fi
 	done
+	STATEFUL_SECTORS=$(cgpt show -i 1 -s -n -q "$CRAP_DISK")
+	STATEFUL_SIZE=$((CRAP_DISK_SECTOR_SIZE * STATEFUL_SECTORS))
+	STATEFUL_SIZE_HR="$(format_bytes "$STATEFUL_SIZE") ($((STATEFUL_SIZE / (STATEFUL_MAX_SIZE / 100)))% of available)"
 	if STATEFUL_TUNE2FS=$(tune2fs -l "$STATEFUL_PART" 2>&1); then
 		STATEFUL_VALID_FS=1
 		STATEFUL_BLOCK_SIZE=$(echo "$STATEFUL_TUNE2FS" | grep "Block size" | awk '{print $3}')
 		STATEFUL_MIN_BLOCKS=$(resize2fs -P "$STATEFUL_PART" 2>/dev/null | grep "Estimated minimum size" | awk '{print $NF}')
 		STATEFUL_FS_USAGE=$((STATEFUL_BLOCK_SIZE * STATEFUL_MIN_BLOCKS))
-		STATEFUL_FS_USAGE_HR="$(format_bytes "$STATEFUL_FS_USAGE") ($(((STATEFUL_FS_USAGE / (STATEFUL_SIZE / 100))))%)"
+		STATEFUL_FS_USAGE_HR="$(format_bytes "$STATEFUL_FS_USAGE") ($((STATEFUL_FS_USAGE / (STATEFUL_SIZE / 100)))%)"
 	else
 		STATEFUL_VALID_FS=0
 		STATEFUL_BLOCK_SIZE=
@@ -148,8 +177,14 @@ refresh_stateful() {
 	fi
 }
 
+print_disk_info() {
+	echo -e "║ ${COLOR_YELLOW}Disk:${COLOR_RESET} $(printf "%-60.60s" "$CRAP_DISK") ║"
+	echo -e "║ ${COLOR_YELLOW}Disk size:${COLOR_RESET} $(printf "%-55.55s" "$CRAP_DISK_SIZE_HR") ║"
+	echo -e "║ ${COLOR_YELLOW}Stateful size:${COLOR_RESET} $(printf "%-51.51s" "$STATEFUL_SIZE_HR") ║"
+}
+
 resize_stateful_menu() {
-	clear_screen
+	local num_action new_bytes new_sectors
 	if ! unmount_stateful; then
 		echo "Failed to unmount stateful."
 		echo "Press enter to return to the main menu."
@@ -157,14 +192,76 @@ resize_stateful_menu() {
 		return
 	fi
 	refresh_stateful
-	echo "Disk size: $CRAP_DISK_SIZE_HR"
-	echo "Stateful size: $STATEFUL_SIZE_HR"
-	[ "$STATEFUL_VALID_FS" -eq 1 ] && echo "Stateful FS usage: $STATEFUL_FS_USAGE_HR"
+	while true; do
+		clear_screen
+		echo -e "╔════════════════════════════════════════════════════════════════════╗"
+		print_disk_info
+		echo -e "║ ${COLOR_YELLOW}Maximum stateful size:${COLOR_RESET} $(printf "%-43.43s" "$STATEFUL_MAX_SIZE_HR") ║"
+		[ "$STATEFUL_VALID_FS" -eq 1 ] && echo -e "║ ${COLOR_YELLOW}Stateful FS usage (min size):${COLOR_RESET} $(printf "%-36.36s" "$STATEFUL_FS_USAGE_HR") ║"
+		echo -e "╠════════════════════════════════════════════════════════════════════╣"
+		echo -e "║ ${COLOR_CYAN_B}Resizing stateful partition${COLOR_RESET}                                        ║"
+		echo -e "║ ${COLOR_YELLOW}Acceptable units (integer only):${COLOR_RESET}                                   ║"
+		echo -e "║ % - % total disk space                                             ║"
+		echo -e "║ %a - % total available space                                       ║"
+		echo -e "║ G - size in gibibytes                                              ║"
+		echo -e "║ M - size in mebibytes                                              ║"
+		echo -e "╚════════════════════════════════════════════════════════════════════╝"
+		echo -e "Enter a new size or press ${COLOR_YELLOW_B}Q${COLOR_RESET} to cancel."
+		read -re action
+		num_action="${action//[^0-9]/}"
+		case "$action" in
+			[qQ]) return ;;
+			*.*) continue ;;
+			0*) continue ;;
+			[0-9]*%) new_bytes=$(((num_action * CRAP_DISK_SIZE) / 100)) ;;
+			[0-9]*%[aA]) new_bytes=$(((num_action * STATEFUL_MAX_SIZE) / 100)) ;;
+			[0-9]*[gG]) new_bytes=$((num_action * (1024 ** 3))) ;;
+			[0-9]*[mM]) new_bytes=$((num_action * (1024 ** 2))) ;;
+			*) continue ;;
+		esac
+		if [ "$new_bytes" -eq "$STATEFUL_SIZE" ]; then
+			echo -e "${COLOR_BLUE_B}Stateful is already that size. What are you doing?${COLOR_RESET}"
+			wait_on_enter
+			continue
+		fi
+		if [ "$new_bytes" -gt "$STATEFUL_MAX_SIZE" ]; then
+			echo -e "${COLOR_RED_B}The size you entered ($(format_bytes "$new_bytes")) is too large.${COLOR_RESET}"
+			wait_on_enter
+			continue
+		fi
+		if [ "$STATEFUL_VALID_FS" -eq 1 ] && [ "$new_bytes" -lt "$STATEFUL_FS_USAGE" ]; then
+			echo -e "${COLOR_RED_B}The size you entered ($(format_bytes "$new_bytes")) is smaller than the filesystem."
+			echo -e "If you want to shrink the partition further, you must first destroy the filesystem.${COLOR_RESET}"
+			wait_on_enter
+			continue
+		fi
 
-	# todo: get minimum and maximum possible stateful size
+		echo -e "${COLOR_CYAN_B}Stateful will be resized to $(format_bytes "$new_bytes"). Is this ok? ${COLOR_YELLOW_B}(y/N)${COLOR_RESET}"
+		read -re action
+		case "$action" in
+			[yY]) : ;;
+			*) continue ;;
+		esac
 
+		new_sectors=$((new_bytes / CRAP_DISK_SECTOR_SIZE))
+		if [ "$new_bytes" -gt "$STATEFUL_SIZE" ]; then
+			cgpt add -i 1 -s "$new_sectors" "$CRAP_DISK"
+			blkrrpart "$CRAP_DISK"
+		fi
+		if [ "$STATEFUL_VALID_FS" -eq 1 ]; then
+			echo "Resizing..."
+			suppress_out e2fsck -fy "$STATEFUL_PART"
+			suppress_out resize2fs "$STATEFUL_PART" "$(((new_sectors * CRAP_DISK_SECTOR_SIZE) / STATEFUL_BLOCK_SIZE))"
+		fi
+		if [ "$new_bytes" -lt "$STATEFUL_SIZE" ]; then
+			cgpt add -i 1 -s "$new_sectors" "$CRAP_DISK"
+			blkrrpart "$CRAP_DISK"
+		fi
+		echo -e "${COLOR_GREEN_B}Success.${COLOR_RESET}"
+		break
+	done
 	refresh_stateful
-	wait_on_enter
+	wait_on_enter_menu
 }
 
 # try to accurately detect/mimic the problematic behavior of libparted
@@ -247,7 +344,7 @@ fix_1s_parts() {
 	gapstart=$(find_unallocated_sectors "$CRAP_DISK" "$((${#p1s_n[@]} + 1))") || :
 	if [ -z "$gapstart" ]; then
 		echo -e "${COLOR_RED_B}Not enough unpartitioned space on disk. Cannot continue.${COLOR_RESET}"
-		wait_on_enter
+		wait_on_enter_menu
 		return
 	fi
 
@@ -263,13 +360,13 @@ fix_1s_parts() {
 
 	check_1s_parts_need_fix
 	if [ -z "$NEEDS_1S_FIX" ]; then
-		echo "Success."
+		echo -e "${COLOR_GREEN_B}Success.${COLOR_RESET}"
 	else
 		echo -e "${COLOR_RED_B}An error occured and the partitions were not properly reordered."
 		echo -e "Current partition table is shown below:${COLOR_RESET}"
 		sfdisk -l "$CRAP_DISK"
 	fi
-	wait_on_enter
+	wait_on_enter_menu
 }
 
 # todo: implement this maybe?
@@ -278,7 +375,7 @@ check_1s_parts_prompt() {
 	[ -z "$NEEDS_1S_FIX" ] && return
 	clear_screen
 	echo "You need the fix"
-	wait_on_enter
+	wait_on_enter_menu
 }
 
 cleanup_and_exit() {
@@ -293,10 +390,7 @@ menu() {
 		echo -e " ChromeOS Automated Partitioning (CRAP)"
 		echo -e " https://github.com/chrultrabook/crap"
 		echo -e "╔════════════════════════════════════════════════════════════════════╗"
-		echo -e "║ Disk: $(printf "%-60.60s" "$CRAP_DISK") ║"
-		echo -e "║ Disk size: $(printf "%-55.55s" "$CRAP_DISK_SIZE_HR") ║"
-		echo -e "║ Stateful size: $(printf "%-51.51s" "$STATEFUL_SIZE_HR") ║"
-		[ "$STATEFUL_VALID_FS" -eq 1 ] && echo -e "║ Stateful FS usage: $(printf "%-47.47s" "$STATEFUL_FS_USAGE_HR") ║"
+		print_disk_info
 		echo -e "╠════════════════════════════════════════════════════════════════════╣"
 		echo -e "║ ${COLOR_YELLOW_B}1) ${COLOR_CYAN_B}Resize stateful partition${COLOR_RESET}                                       ║"
 		echo -e "║    Resize the ChromeOS user data partition to make space for an    ║"
@@ -317,9 +411,9 @@ menu() {
 		echo -e "Select an option:"
 		read -re action
 		case "$action" in
+			[qQ]) cleanup_and_exit ;;
 			1) resize_stateful_menu ;;
 			2) fix_1s_parts ;;
-			[qQ]) cleanup_and_exit ;;
 		esac
 	done
 }
@@ -344,7 +438,7 @@ CRAP_DISK_SIZE_HR=$(format_bytes "$CRAP_DISK_SIZE")
 STATEFUL_PART=$(format_part_number "$CRAP_DISK" 1)
 refresh_stateful
 
-[ "$CRAP_TESTING" -eq 0 ] && initctl stop powerd &>/dev/null || :
+[ "$CRAP_TESTING" -eq 0 ] && suppress initctl stop powerd || :
 
 #check_1s_parts_prompt
 check_1s_parts_need_fix
