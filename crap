@@ -29,7 +29,6 @@ COLOR_YELLOW_B="\033[1;33m"
 COLOR_BLUE_B="\033[1;34m"
 COLOR_MAGENTA_B="\033[1;35m"
 COLOR_CYAN_B="\033[1;36m"
-CHAR_CHECK="\u2713"
 
 fail() {
 	printf "${COLOR_RED_B}%s\n" "$*" >&2 || :
@@ -128,7 +127,7 @@ wait_on_enter_menu() {
 
 unmount_stateful() {
 	[ "$CRAP_TESTING" -eq 1 ] && return
-	grep -q "^$STATEFUL_PART" /proc/mounts || return
+	grep -q "^$STATEFUL_PART" /proc/mounts || return 0
 	echo "Unmounting stateful"
 	suppress_out cryptohome --action=unmount || :
 	suppress_out initctl stop ui || :
@@ -156,7 +155,7 @@ refresh_stateful() {
 	all_starts=($(cgpt show "$CRAP_DISK" | grep "^\s*[0-9]" | awk '{print $1}' | sort -n))
 	for i in "${!all_starts[@]}"; do
 		if [ "${all_starts[$i]}" = "$stateful_start" ]; then
-			STATEFUL_MAX_SECTORS=$(("${all_starts[$((i + 1))]}" - stateful_start - 1))
+			STATEFUL_MAX_SECTORS=$((${all_starts[$((i + 1))]} - stateful_start - 1))
 			STATEFUL_MAX_SIZE=$((CRAP_DISK_SECTOR_SIZE * STATEFUL_MAX_SECTORS))
 			STATEFUL_MAX_SIZE_HR=$(format_bytes "$STATEFUL_MAX_SIZE")
 			break
@@ -168,6 +167,7 @@ refresh_stateful() {
 	if STATEFUL_TUNE2FS=$(tune2fs -l "$STATEFUL_PART" 2>&1); then
 		STATEFUL_VALID_FS=1
 		STATEFUL_BLOCK_SIZE=$(echo "$STATEFUL_TUNE2FS" | grep "Block size" | awk '{print $3}')
+		# todo: sometimes resize2fs is too old and broken...
 		STATEFUL_MIN_BLOCKS=$(resize2fs -P "$STATEFUL_PART" 2>/dev/null | grep "Estimated minimum size" | awk '{print $NF}')
 		STATEFUL_FS_USAGE=$((STATEFUL_BLOCK_SIZE * STATEFUL_MIN_BLOCKS))
 		STATEFUL_FS_USAGE_HR="$(format_bytes "$STATEFUL_FS_USAGE") ($((STATEFUL_FS_USAGE / (STATEFUL_SIZE / 100)))%)"
@@ -314,11 +314,12 @@ check_1s_parts_need_fix() {
 }
 
 find_unallocated_sectors() {
-	local allgaps
+	local allgaps gapstart
 	if allgaps=$(sfdisk -F "$1" | grep "^\s*[0-9]"); then
 		while read gap; do
-			if [ "$(echo "$gap" | awk '{print $3}')" -ge "$2" ]; then
-				echo "$gap" | awk '{print $1}'
+			gapstart=$(echo "$gap" | awk '{print $1}')
+			if [ "$(echo "$gap" | awk '{print $2}')" -gt "$gapstart" ] && [ "$(echo "$gap" | awk '{print $3}')" -ge "$2" ]; then
+				echo "$gapstart"
 				return
 			fi
 		done <<<"$allgaps"
@@ -404,7 +405,7 @@ menu() {
 			echo -e "║    detect existing partitions. Highly recommended before           ║"
 			echo -e "║    installing linux alongside ChromeOS.                            ║"
 		else
-			echo -e "║ ${COLOR_BLACK_B}2) Reorder 1-sector partitions${COLOR_GREEN_B} ${CHAR_CHECK}${COLOR_RESET}                                   ║"
+			echo -e "║ ${COLOR_BLACK_B}2) Reorder 1-sector partitions${COLOR_GREEN_B} (Done)${COLOR_RESET}                              ║"
 			echo -e "║    ${COLOR_BLACK_B}Fix a bug that causes libparted to error and be unable to${COLOR_RESET}       ║"
 			echo -e "║    ${COLOR_BLACK_B}detect existing partitions. Highly recommended before${COLOR_RESET}           ║"
 			echo -e "║    ${COLOR_BLACK_B}installing linux alongside ChromeOS.${COLOR_RESET}                            ║"
