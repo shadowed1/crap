@@ -12,6 +12,9 @@
 
 set -eE
 
+# variable variables
+SCRIPT_DATE="[2023-12-12]"
+
 # optional variables
 [ -z "$CRAP_TESTING" ] && CRAP_TESTING=0
 [ -z "$CRAP_DEBUG" ] && CRAP_DEBUG=0
@@ -387,7 +390,7 @@ cleanup_and_exit() {
 menu() {
 	while true; do
 		clear_screen
-		echo -e " ChromeOS Automated Partitioning (CRAP)"
+		echo -e " ChromeOS Automated Partitioning (CRAP) $SCRIPT_DATE"
 		echo -e " https://github.com/chrultrabook/crap"
 		echo -e "╔════════════════════════════════════════════════════════════════════╗"
 		print_disk_info
