@@ -17,6 +17,7 @@ See [MrChromebox's Firmware Utility Script](https://mrchromebox.tech/#fwscript) 
 1. Ensure you're in developer mode and connected to WiFi.
 2. Open VT2 using `[ Ctrl ] [ Alt ] [ → ]`, login as `root`
 	- Note: the script cannot be run with crosh on any version of ChromeOS.
+	- Note 2: you can also run the script while booted into your alternate OS!
 3. Run the script!
 	- Run `bash <(curl https://raw.githubusercontent.com/chrultrabook/crap/master/crap)`
 	- URL shortened version: `bash <(curl -L https://tinyurl.com/crap-cb-01)`
