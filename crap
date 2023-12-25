@@ -56,9 +56,13 @@ suppress_out() {
 	fi
 }
 
+IS_CROS=0
+[ -f /etc/lsb-release ] && grep -q '^\(Chrome OS\|Chromium OS\|neverware\)' /etc/lsb-release && IS_CROS=1
+
 readlink /proc/$$/exe | grep -q bash || fail "Please run with bash"
+grandparent_pid=$(ps -o ppid= $PPID | tr -d '[:space:]')
+[ -n "$grandparent_pid" ] && readlink /proc/$grandparent_pid/exe | grep -q crosh && fail "Please run from a VT, not from crosh. Press [ Ctrl ] [ Alt ] [ -> ] (F2) to switch to VT2."
 [ "$EUID" -ne 0 ] && fail "Please run as root"
-readlink /proc/$PPID/exe | grep -q crosh && fail "Please run from a VT, not from crosh. Press [ Ctrl ] [ Alt ] [ -> ] (F2) to switch to VT2."
 
 format_bytes() {
 	numfmt --to=iec-i --suffix=B "$@"
@@ -492,15 +496,12 @@ main_menu() {
 	done
 }
 
-IS_CROS=0
-[ -f /etc/lsb-release ] && grep -q '^\(Chrome OS\|Chromium OS\|neverware\)' /etc/lsb-release && IS_CROS=1
-
 if [ "$CRAP_TESTING" -eq 1 ]; then
 	[ -f "$1" ] || fail "$1 doesn't exist or isn't a file"
 	CRAP_DISK=$(losetup -f)
 	losetup -P "$CRAP_DISK" "$1"
 else
-	CRAP_DISK="$(get_largest_cros_blockdev)"
+	CRAP_DISK=$(get_largest_cros_blockdev)
 	[ -z "$CRAP_DISK" ] && fail "No CrOS SSD found on device!"
 fi
 
