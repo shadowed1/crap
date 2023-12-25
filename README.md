@@ -24,7 +24,11 @@ See [MrChromebox's Firmware Utility Script](https://mrchromebox.tech/#fwscript) 
 
 ## Screenshots
 
+CRAP - main menu
+
 ![Screenshot - CRAP - main menu](/screenshots/screenshot01.png)
+
+CRAP - resizing stateful partition
 
 ![Screenshot - CRAP - resizing stateful partition](/screenshots/screenshot02.png)
 
