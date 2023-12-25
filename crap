@@ -32,12 +32,12 @@ COLOR_MAGENTA_B="\033[1;35m"
 COLOR_CYAN_B="\033[1;36m"
 
 fail() {
-	printf "${COLOR_RED_B}%s\n" "$*" >&2 || :
+	printf "${COLOR_RED_B}%b${COLOR_RESET}\n" "$*" >&2 || :
 	exit 1
 }
 
 log_debug() {
-	[ "$CRAP_DEBUG" -eq 1 ] && printf "%s\n" "$*" >&2 || :
+	[ "$CRAP_DEBUG" -eq 1 ] && printf "%b\n" "$*" >&2 || :
 }
 
 suppress() {
@@ -60,18 +60,22 @@ IS_CROS=0
 [ -f /etc/lsb-release ] && grep -q '\(Chrome OS\|Chromium OS\|neverware\)' /etc/lsb-release && IS_CROS=1
 
 readlink /proc/$$/exe | grep -q bash || fail "Please run with bash"
+[ "$EUID" -ne 0 ] && fail "Please run as root"
 grandparent_pid=$(ps -o ppid= $PPID | tr -d '[:space:]')
 [ -n "$grandparent_pid" ] && readlink /proc/$grandparent_pid/exe | grep -q crosh && fail "Please run from a VT, not from crosh. Press [ Ctrl ] [ Alt ] [ -> ] (F2) to switch to VT2."
-[ "$EUID" -ne 0 ] && fail "Please run as root"
 
 format_bytes() {
 	numfmt --to=iec-i --suffix=B "$@"
 }
 
-blkrrpart() {
-	# do nothing but reload partition table
-	sfdisk "$1" </dev/null &>/dev/null
+check_deps() {
+	for dep in "$@"; do
+		command -v "$dep" &>/dev/null || echo "$dep"
+	done
 }
+
+missing_deps=$(check_deps sfdisk cgpt partx blockdev e2fsck resize2fs)
+[ -n "$missing_deps" ] && fail "The following required commands weren't found in PATH:\n${missing_deps}"
 
 get_largest_blockdev() {
 	local largest size dev_name tmp_size remo
@@ -282,6 +286,7 @@ resize_stateful_menu() {
 		# grow partition
 		if [ "$new_sectors" -gt "$STATEFUL_SECTORS" ]; then
 			cgpt add -i 1 -s "$new_sectors" "$CRAP_DISK"
+			partx -u -n 1 "$CRAP_DISK"
 		fi
 		# resize filesystem
 		if [ "$STATEFUL_VALID_FS" -eq 1 ] && [ "$STATEFUL_MOUNTED" -eq 0 ]; then
@@ -293,6 +298,7 @@ resize_stateful_menu() {
 				# failure, shrink partition back to original size
 				if [ "$new_sectors" -gt "$STATEFUL_SECTORS" ]; then
 					cgpt add -i 1 -s "$STATEFUL_SECTORS" "$CRAP_DISK"
+					partx -u -n 1 "$CRAP_DISK"
 				fi
 				echo -e "${COLOR_RED_B}resize2fs failed, command output is shown below:${COLOR_RESET}"
 				echo "$resize2fs_out"
@@ -302,8 +308,8 @@ resize_stateful_menu() {
 		# shrink partition
 		if [ "$new_sectors" -lt "$STATEFUL_SECTORS" ]; then
 			cgpt add -i 1 -s "$new_sectors" "$CRAP_DISK"
+			partx -u -n 1 "$CRAP_DISK"
 		fi
-		blkrrpart "$CRAP_DISK" || :
 		echo -e "${COLOR_GREEN_B}Success.${COLOR_RESET}"
 		break
 	done
