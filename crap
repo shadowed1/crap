@@ -282,7 +282,6 @@ resize_stateful_menu() {
 		# grow partition
 		if [ "$new_sectors" -gt "$STATEFUL_SECTORS" ]; then
 			cgpt add -i 1 -s "$new_sectors" "$CRAP_DISK"
-			blkrrpart "$CRAP_DISK"
 		fi
 		# resize filesystem
 		if [ "$STATEFUL_VALID_FS" -eq 1 ] && [ "$STATEFUL_MOUNTED" -eq 0 ]; then
@@ -294,7 +293,6 @@ resize_stateful_menu() {
 				# failure, shrink partition back to original size
 				if [ "$new_sectors" -gt "$STATEFUL_SECTORS" ]; then
 					cgpt add -i 1 -s "$STATEFUL_SECTORS" "$CRAP_DISK"
-					blkrrpart "$CRAP_DISK"
 				fi
 				echo -e "${COLOR_RED_B}resize2fs failed, command output is shown below:${COLOR_RESET}"
 				echo "$resize2fs_out"
@@ -304,8 +302,8 @@ resize_stateful_menu() {
 		# shrink partition
 		if [ "$new_sectors" -lt "$STATEFUL_SECTORS" ]; then
 			cgpt add -i 1 -s "$new_sectors" "$CRAP_DISK"
-			blkrrpart "$CRAP_DISK"
 		fi
+		blkrrpart "$CRAP_DISK" || :
 		echo -e "${COLOR_GREEN_B}Success.${COLOR_RESET}"
 		break
 	done
