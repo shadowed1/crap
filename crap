@@ -13,7 +13,7 @@
 set -eE
 
 # variable variables
-SCRIPT_DATE="[2023-12-12]"
+SCRIPT_DATE="[2023-12-24]"
 
 # optional variables
 [ -z "$CRAP_TESTING" ] && CRAP_TESTING=0
@@ -23,8 +23,9 @@ SCRIPT_DATE="[2023-12-12]"
 COLOR_RESET="\033[0m"
 COLOR_BLACK_B="\033[1;30m"
 COLOR_RED_B="\033[1;31m"
+COLOR_GREEN="\033[0;32m"
 COLOR_GREEN_B="\033[1;32m"
-COLOR_YELLOW="\033[33m"
+COLOR_YELLOW="\033[0;33m"
 COLOR_YELLOW_B="\033[1;33m"
 COLOR_BLUE_B="\033[1;34m"
 COLOR_MAGENTA_B="\033[1;35m"
@@ -125,31 +126,37 @@ wait_on_enter_menu() {
 	read -res
 }
 
+check_stateful_mount() {
+	if grep -q "^${STATEFUL_PART}\s" /proc/mounts; then
+		STATEFUL_MOUNTED=1
+	else
+		STATEFUL_MOUNTED=0
+	fi
+}
+
 unmount_stateful() {
-	[ "$CRAP_TESTING" -eq 1 ] && return
-	grep -q "^$STATEFUL_PART" /proc/mounts || return 0
+	[ "$CRAP_TESTING" -eq 1 ] && return 0
+	check_stateful_mount
+	[ "$STATEFUL_MOUNTED" -eq 0 ] && return 0
 	echo "Unmounting stateful"
-	suppress_out cryptohome --action=unmount || :
-	suppress_out initctl stop ui || :
-	suppress_out initctl stop cryptohomed || :
 
-	# /var and /mnt/stateful_partition will never unmount cleanly.
-	# try normal umount first, then lazy if that fails.
-	if grep -q "^/dev/mapper/encstateful" /proc/mounts; then
-		suppress umount -A /dev/mapper/encstateful || :
-		suppress umount -Al /dev/mapper/encstateful || :
+	# note that we CANNOT lazy unmount.
+	if [ "$IS_CROS" -eq 1 ]; then
+		# this took me about 2 weeks to figure out :sob:
+		suppress initctl start pre-shutdown || :
+		suppress chromeos_shutdown || :
 	fi
+	# fall back to this, we're not in CrOS, or maybe in a recovery image?
 	suppress umount -A "$STATEFUL_PART" || :
-	suppress_out umount -Al "$STATEFUL_PART"
 
-	if grep -q "^$STATEFUL_PART" /proc/mounts; then
-		return 1
-	fi
+	check_stateful_mount
+	[ "$STATEFUL_MOUNTED" -eq 1 ] && return 1
 	echo "Unmounted successfully"
 }
 
 refresh_stateful() {
 	local stateful_start all_starts
+	check_stateful_mount
 	stateful_start=$(cgpt show -i 1 -b -n -q "$CRAP_DISK")
 	# important to not use -q here
 	all_starts=($(cgpt show "$CRAP_DISK" | grep "^\s*[0-9]" | awk '{print $1}' | sort -n))
@@ -167,8 +174,9 @@ refresh_stateful() {
 	if STATEFUL_TUNE2FS=$(tune2fs -l "$STATEFUL_PART" 2>&1); then
 		STATEFUL_VALID_FS=1
 		STATEFUL_BLOCK_SIZE=$(echo "$STATEFUL_TUNE2FS" | grep "Block size" | awk '{print $3}')
-		# todo: sometimes resize2fs is too old and broken...
 		STATEFUL_MIN_BLOCKS=$(resize2fs -P "$STATEFUL_PART" 2>/dev/null | grep "Estimated minimum size" | awk '{print $NF}')
+		# fallback for when resize2fs breaks for some reason...
+		[ -z "$STATEFUL_MIN_BLOCKS" ] && STATEFUL_MIN_BLOCKS=$(($(echo "$STATEFUL_TUNE2FS" | grep "Block count" | awk '{print $3}') - $(echo "$STATEFUL_TUNE2FS" | grep "Free blocks" | awk '{print $3}')))
 		STATEFUL_FS_USAGE=$((STATEFUL_BLOCK_SIZE * STATEFUL_MIN_BLOCKS))
 		STATEFUL_FS_USAGE_HR="$(format_bytes "$STATEFUL_FS_USAGE") ($((STATEFUL_FS_USAGE / (STATEFUL_SIZE / 100)))%)"
 	else
@@ -187,12 +195,17 @@ print_disk_info() {
 }
 
 resize_stateful_menu() {
-	local num_action new_bytes new_sectors
-	if ! unmount_stateful; then
-		echo "Failed to unmount stateful."
-		echo "Press enter to return to the main menu."
-		read -res
-		return
+	local num_action new_bytes new_sectors new_blocks resize2fs_out
+	if ! unmount_stateful ; then
+		clear_screen
+		echo -e "${COLOR_RED_B}Failed to unmount stateful."
+		echo -e "You may proceed, but shrinking of the partition will DESTROY YOUR DATA.${COLOR_RESET}"
+		echo -e "${COLOR_CYAN_B}Would you like to continue? ${COLOR_YELLOW_B}(y/N)${COLOR_RESET}"
+		read -re action
+		case "$action" in
+			[yY]) : ;;
+			*) return ;;
+		esac
 	fi
 	refresh_stateful
 	while true; do
@@ -200,9 +213,17 @@ resize_stateful_menu() {
 		echo -e "╔════════════════════════════════════════════════════════════════════╗"
 		print_disk_info
 		echo -e "║ ${COLOR_YELLOW}Maximum stateful size:${COLOR_RESET} $(printf "%-43.43s" "$STATEFUL_MAX_SIZE_HR") ║"
-		[ "$STATEFUL_VALID_FS" -eq 1 ] && echo -e "║ ${COLOR_YELLOW}Stateful FS usage (min size):${COLOR_RESET} $(printf "%-36.36s" "$STATEFUL_FS_USAGE_HR") ║"
+		if [ "$STATEFUL_VALID_FS" -eq 1 ]; then
+			echo -e "║ ${COLOR_YELLOW}Stateful FS usage (min size):${COLOR_RESET} $(printf "%-36.36s" "$STATEFUL_FS_USAGE_HR") ║"
+		else
+			echo "║ Stateful does not contain a valid filesystem.                      ║"
+		fi
 		echo -e "╠════════════════════════════════════════════════════════════════════╣"
-		echo -e "║ ${COLOR_CYAN_B}Resizing stateful partition${COLOR_RESET}                                        ║"
+		if [ "$STATEFUL_MOUNTED" -eq 0 ]; then
+			echo -e "║ ${COLOR_CYAN_B}Resizing stateful partition${COLOR_RESET}                                        ║"
+		else
+			echo -e "║ ${COLOR_RED_B}Resizing stateful partition (destructive)${COLOR_RESET}                          ║"
+		fi
 		echo -e "║ ${COLOR_YELLOW}Acceptable units (integer only):${COLOR_RESET}                                   ║"
 		echo -e "║ % - % total disk space                                             ║"
 		echo -e "║ %a - % total available space                                       ║"
@@ -214,7 +235,9 @@ resize_stateful_menu() {
 		num_action="${action//[^0-9]/}"
 		case "$action" in
 			[qQ]) return ;;
+			# decimals
 			*.*) continue ;;
+			# octal/hex
 			0*) continue ;;
 			[0-9]*%) new_bytes=$(((num_action * CRAP_DISK_SIZE) / 100)) ;;
 			[0-9]*%[aA]) new_bytes=$(((num_action * STATEFUL_MAX_SIZE) / 100)) ;;
@@ -222,6 +245,7 @@ resize_stateful_menu() {
 			[0-9]*[mM]) new_bytes=$((num_action * (1024 ** 2))) ;;
 			*) continue ;;
 		esac
+
 		if [ "$new_bytes" -eq "$STATEFUL_SIZE" ]; then
 			echo -e "${COLOR_BLUE_B}Stateful is already that size. What are you doing?${COLOR_RESET}"
 			wait_on_enter
@@ -234,29 +258,47 @@ resize_stateful_menu() {
 		fi
 		if [ "$STATEFUL_VALID_FS" -eq 1 ] && [ "$new_bytes" -lt "$STATEFUL_FS_USAGE" ]; then
 			echo -e "${COLOR_RED_B}The size you entered ($(format_bytes "$new_bytes")) is smaller than the filesystem."
-			echo -e "If you want to shrink the partition further, you must first destroy the filesystem.${COLOR_RESET}"
-			wait_on_enter
-			continue
+			echo -e "You may proceed, but this will DESTROY YOUR DATA.${COLOR_RESET}"
+			echo -e "${COLOR_CYAN_B}Would you like to continue? ${COLOR_YELLOW_B}(y/N)${COLOR_RESET}"
+			read -re action
+			case "$action" in
+				[yY]) STATEFUL_VALID_FS=0 ;;
+				*) continue ;;
+			esac
+		else
+			echo -e "${COLOR_CYAN_B}Stateful will be resized to $(format_bytes "$new_bytes"). Is this ok? ${COLOR_YELLOW_B}(y/N)${COLOR_RESET}"
+			read -re action
+			case "$action" in
+				[yY]) : ;;
+				*) continue ;;
+			esac
 		fi
 
-		echo -e "${COLOR_CYAN_B}Stateful will be resized to $(format_bytes "$new_bytes"). Is this ok? ${COLOR_YELLOW_B}(y/N)${COLOR_RESET}"
-		read -re action
-		case "$action" in
-			[yY]) : ;;
-			*) continue ;;
-		esac
-
 		new_sectors=$((new_bytes / CRAP_DISK_SECTOR_SIZE))
-		if [ "$new_bytes" -gt "$STATEFUL_SIZE" ]; then
+		# grow partition
+		if [ "$new_sectors" -gt "$STATEFUL_SECTORS" ]; then
 			cgpt add -i 1 -s "$new_sectors" "$CRAP_DISK"
 			blkrrpart "$CRAP_DISK"
 		fi
-		if [ "$STATEFUL_VALID_FS" -eq 1 ]; then
-			echo "Resizing..."
-			suppress_out e2fsck -fy "$STATEFUL_PART"
-			suppress_out resize2fs "$STATEFUL_PART" "$(((new_sectors * CRAP_DISK_SECTOR_SIZE) / STATEFUL_BLOCK_SIZE))"
+		# resize filesystem
+		if [ "$STATEFUL_VALID_FS" -eq 1 ] && [ "$STATEFUL_MOUNTED" -eq 0 ]; then
+			# multiply again to ensure floor
+			new_blocks=$(((new_sectors * CRAP_DISK_SECTOR_SIZE) / STATEFUL_BLOCK_SIZE))
+			echo "Resizing filesystem..."
+			suppress e2fsck -fy "$STATEFUL_PART" || :
+			if ! resize2fs_out=$(resize2fs "$STATEFUL_PART" "$new_blocks" 2>&1); then
+				# failure, shrink partition back to original size
+				if [ "$new_sectors" -gt "$STATEFUL_SECTORS" ]; then
+					cgpt add -i 1 -s "$STATEFUL_SECTORS" "$CRAP_DISK"
+					blkrrpart "$CRAP_DISK"
+				fi
+				echo -e "${COLOR_RED_B}resize2fs failed, command output is shown below:${COLOR_RESET}"
+				echo "$resize2fs_out"
+				break
+			fi
 		fi
-		if [ "$new_bytes" -lt "$STATEFUL_SIZE" ]; then
+		# shrink partition
+		if [ "$new_sectors" -lt "$STATEFUL_SECTORS" ]; then
 			cgpt add -i 1 -s "$new_sectors" "$CRAP_DISK"
 			blkrrpart "$CRAP_DISK"
 		fi
@@ -308,7 +350,7 @@ check_1s_parts_need_fix() {
 			log_debug "[no problem]"
 		fi
 	done
-	log_debug "[needs move]: ${needs_move[@]}"
+	log_debug "[needs move]:" "${needs_move[@]}"
 
 	NEEDS_1S_FIX=$(printf '%s\n' "${needs_move[@]}" | sort -n)
 }
@@ -352,14 +394,15 @@ fix_1s_parts() {
 		return
 	fi
 
-	log_debug "parts to move: ${p1s_n[@]}"
+	log_debug "parts to move:" "${p1s_n[@]}"
 	log_debug "gap min: $((${#p1s_n[@]} + 1))"
 	log_debug "gap start: $gapstart"
 
 	echo "Reordering partitions..."
+	# move the partitions
 	for i in "${!p1s_n[@]}"; do
-		log_debug cgpt add -i "${p1s_n[$i]}" -b "$((gapstart + $i))" -s 1 "$CRAP_DISK"
-		cgpt add -i "${p1s_n[$i]}" -b "$((gapstart + $i))" -s 1 "$CRAP_DISK"
+		log_debug cgpt add -i "${p1s_n[$i]}" -b "$((gapstart + i))" -s 1 "$CRAP_DISK"
+		cgpt add -i "${p1s_n[$i]}" -b "$((gapstart + i))" -s 1 "$CRAP_DISK"
 	done
 
 	check_1s_parts_need_fix
@@ -373,22 +416,28 @@ fix_1s_parts() {
 	wait_on_enter_menu
 }
 
-# todo: implement this maybe?
 check_1s_parts_prompt() {
-	check_1s_parts_need_fix
-	[ -z "$NEEDS_1S_FIX" ] && return
+	[ -z "$NEEDS_1S_FIX" ] && return 0
 	clear_screen
-	echo "You need the fix"
-	wait_on_enter_menu
+	echo "You have not reordered 1-sector partitions --"
+	echo "doing so is highly recommended if you're installing linux"
+	echo "alongside ChromeOS."
+	echo -e "${COLOR_CYAN_B}Would you like to reorder these partitions now? ${COLOR_YELLOW_B}(y/N)${COLOR_RESET}"
+	read -re action
+	case "$action" in
+		[yY]) : ;;
+		*) return ;;
+	esac
+	fix_1s_parts
+	main_menu
 }
 
-cleanup_and_exit() {
+cleanup() {
 	[ "$CRAP_TESTING" -eq 1 ] && losetup -d "$CRAP_DISK"
-	trap - EXIT
-	exit
+	trap - EXIT INT
 }
 
-menu() {
+main_menu() {
 	while true; do
 		clear_screen
 		echo -e " ChromeOS Automated Partitioning (CRAP) $SCRIPT_DATE"
@@ -405,22 +454,46 @@ menu() {
 			echo -e "║    detect existing partitions. Highly recommended before           ║"
 			echo -e "║    installing linux alongside ChromeOS.                            ║"
 		else
-			echo -e "║ ${COLOR_BLACK_B}2) Reorder 1-sector partitions${COLOR_GREEN_B} (Done)${COLOR_RESET}                              ║"
+			echo -e "║ ${COLOR_BLACK_B}2) Reorder 1-sector partitions${COLOR_GREEN} (Done)${COLOR_RESET}                              ║"
 			echo -e "║    ${COLOR_BLACK_B}Fix a bug that causes libparted to error and be unable to${COLOR_RESET}       ║"
 			echo -e "║    ${COLOR_BLACK_B}detect existing partitions. Highly recommended before${COLOR_RESET}           ║"
 			echo -e "║    ${COLOR_BLACK_B}installing linux alongside ChromeOS.${COLOR_RESET}                            ║"
 		fi
-		echo -e "║ ${COLOR_YELLOW_B}Q) ${COLOR_CYAN_B}Quit${COLOR_RESET}                                                            ║"
+		echo -e "║ ${COLOR_RED_B}Q) ${COLOR_CYAN_B}Quit${COLOR_RESET}                                                            ║"
+		echo -e "║ ${COLOR_RED_B}R) ${COLOR_CYAN_B}Reboot${COLOR_RESET}                                                          ║"
+		echo -e "║ ${COLOR_RED_B}P) ${COLOR_CYAN_B}Poweroff${COLOR_RESET}                                                        ║"
 		echo -e "╚════════════════════════════════════════════════════════════════════╝"
 		echo -e "Select an option:"
 		read -re action
 		case "$action" in
-			[qQ]) cleanup_and_exit ;;
 			1) resize_stateful_menu ;;
 			2) fix_1s_parts ;;
+			[qQ])
+				check_1s_parts_prompt
+				cleanup
+				[ "$IS_CROS" -eq 1 ] && [ "$STATEFUL_MOUNTED" -eq 0 ] && echo -e "${COLOR_BLUE_B}Welcome to the void.${COLOR_RESET}"
+				exit
+				;;
+			[rR])
+				check_1s_parts_prompt
+				echo "Rebooting..."
+				cleanup
+				[ "$CRAP_TESTING" -eq 0 ] && reboot
+				exit
+				;;
+			[pP])
+				check_1s_parts_prompt
+				echo "Powering off..."
+				cleanup
+				[ "$CRAP_TESTING" -eq 0 ] && poweroff
+				exit
+				;;
 		esac
 	done
 }
+
+IS_CROS=0
+[ -f /etc/lsb-release ] && grep -q '^\(Chrome OS\|Chromium OS\|neverware\)' /etc/lsb-release && IS_CROS=1
 
 if [ "$CRAP_TESTING" -eq 1 ]; then
 	[ -f "$1" ] || fail "$1 doesn't exist or isn't a file"
@@ -431,8 +504,9 @@ else
 	[ -z "$CRAP_DISK" ] && fail "No CrOS SSD found on device!"
 fi
 
-trap 'echo $BASH_COMMAND failed with exit code $?' ERR
-trap cleanup_and_exit EXIT
+trap 'echo $BASH_COMMAND failed with exit code $?. THIS IS A BUG, PLEASE REPORT!' ERR
+trap 'cleanup; exit' EXIT
+trap 'echo Abort.; cleanup; exit' INT
 
 CRAP_DISK_SECTOR_SIZE=$(blockdev --getss "$CRAP_DISK")
 CRAP_DISK_SECTORS=$(blockdev --getsz "$CRAP_DISK")
@@ -442,8 +516,11 @@ CRAP_DISK_SIZE_HR=$(format_bytes "$CRAP_DISK_SIZE")
 STATEFUL_PART=$(format_part_number "$CRAP_DISK" 1)
 refresh_stateful
 
-[ "$CRAP_TESTING" -eq 0 ] && suppress initctl stop powerd || :
+if [ "$IS_CROS" -eq 1 ] && [ "$CRAP_TESTING" -eq 0 ]; then
+	suppress initctl stop powerd || :
+	suppress ectool autofanctrl || :
+	suppress ectool pwmsetkblight 20 || :
+fi
 
-#check_1s_parts_prompt
 check_1s_parts_need_fix
-menu
+main_menu
