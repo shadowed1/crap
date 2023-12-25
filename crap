@@ -57,7 +57,7 @@ suppress_out() {
 }
 
 IS_CROS=0
-[ -f /etc/lsb-release ] && grep -q '^\(Chrome OS\|Chromium OS\|neverware\)' /etc/lsb-release && IS_CROS=1
+[ -f /etc/lsb-release ] && grep -q '\(Chrome OS\|Chromium OS\|neverware\)' /etc/lsb-release && IS_CROS=1
 
 readlink /proc/$$/exe | grep -q bash || fail "Please run with bash"
 grandparent_pid=$(ps -o ppid= $PPID | tr -d '[:space:]')
