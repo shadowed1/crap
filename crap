@@ -2,6 +2,10 @@
 #
 # ChromeOS Automated Partitioning (CRAP)
 # https://github.com/chrultrabook/crap
+# Copyright (C) 2023 - BinBashBanana
+# Contributors add their names here
+#
+# License pending...
 #
 # Thanks to the following projects/files for reference:
 # https://github.com/MrChromebox/scripts
@@ -13,7 +17,7 @@
 set -eE
 
 # variable variables
-SCRIPT_DATE="[2023-12-24]"
+SCRIPT_DATE="[2023-12-25]"
 
 # optional variables
 [ -z "$CRAP_TESTING" ] && CRAP_TESTING=0
@@ -113,6 +117,20 @@ get_largest_cros_blockdev() {
 	echo "$largest"
 }
 
+get_largest_free_space_size() {
+	local allgaps size tmp_size
+	size=0
+	if allgaps=$(sfdisk -F "$1" | grep "^\s*[0-9]"); then
+		while read gap; do
+			tmp_size=$(echo "$gap" | awk '{if ($2 >= $1) print $3}')
+			if [ -n "$tmp_size" ] && [ "$tmp_size" -gt "$size" ]; then
+				size="$tmp_size"
+			fi
+		done <<<"$allgaps"
+	fi
+	echo "$size"
+}
+
 format_part_number() {
 	echo -n "$1"
 	echo "$1" | grep -q '[0-9]$' && echo -n p
@@ -194,11 +212,16 @@ refresh_stateful() {
 		STATEFUL_FS_USAGE=
 		STATEFUL_FS_USAGE_HR=
 	fi
+	# also check free space here
+	CRAP_DISK_LARGEST_FREE_SECTORS=$(get_largest_free_space_size "$CRAP_DISK")
+	CRAP_DISK_LARGEST_FREE_SIZE=$((CRAP_DISK_SECTOR_SIZE * CRAP_DISK_LARGEST_FREE_SECTORS))
+	CRAP_DISK_LARGEST_FREE_SIZE_HR=$(format_bytes "$CRAP_DISK_LARGEST_FREE_SIZE")
 }
 
 print_disk_info() {
 	echo -e "║ ${COLOR_YELLOW}Disk:${COLOR_RESET} $(printf "%-60.60s" "$CRAP_DISK") ║"
 	echo -e "║ ${COLOR_YELLOW}Disk size:${COLOR_RESET} $(printf "%-55.55s" "$CRAP_DISK_SIZE_HR") ║"
+	echo -e "║ ${COLOR_YELLOW}Largest free space:${COLOR_RESET} $(printf "%-46.46s" "$CRAP_DISK_LARGEST_FREE_SIZE_HR") ║"
 	echo -e "║ ${COLOR_YELLOW}Stateful size:${COLOR_RESET} $(printf "%-51.51s" "$STATEFUL_SIZE_HR") ║"
 }
 
@@ -238,7 +261,7 @@ resize_stateful_menu() {
 		echo -e "║ G - size in gibibytes                                              ║"
 		echo -e "║ M - size in mebibytes                                              ║"
 		echo -e "╚════════════════════════════════════════════════════════════════════╝"
-		echo -e "Enter a new size or press ${COLOR_YELLOW_B}Q${COLOR_RESET} to cancel."
+		echo -e "Enter a new size for the stateful partition or press ${COLOR_YELLOW_B}Q${COLOR_RESET} to cancel."
 		read -re action
 		num_action="${action//[^0-9]/}"
 		case "$action" in
@@ -368,7 +391,7 @@ find_unallocated_sectors() {
 	if allgaps=$(sfdisk -F "$1" | grep "^\s*[0-9]"); then
 		while read gap; do
 			gapstart=$(echo "$gap" | awk '{print $1}')
-			if [ "$(echo "$gap" | awk '{print $2}')" -gt "$gapstart" ] && [ "$(echo "$gap" | awk '{print $3}')" -ge "$2" ]; then
+			if [ "$(echo "$gap" | awk '{print $2}')" -ge "$gapstart" ] && [ "$(echo "$gap" | awk '{print $3}')" -ge "$2" ]; then
 				echo "$gapstart"
 				return
 			fi
