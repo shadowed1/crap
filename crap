@@ -118,17 +118,9 @@ get_largest_cros_blockdev() {
 }
 
 get_largest_free_space_size() {
-	local allgaps size tmp_size
-	size=0
-	if allgaps=$(sfdisk -F "$1" | grep "^\s*[0-9]"); then
-		while read gap; do
-			tmp_size=$(echo "$gap" | awk '{if ($2 >= $1) print $3}')
-			if [ -n "$tmp_size" ] && [ "$tmp_size" -gt "$size" ]; then
-				size="$tmp_size"
-			fi
-		done <<<"$allgaps"
-	fi
-	echo "$size"
+	local size
+	size=$(sfdisk -F "$1" | grep "^\s*[0-9]" | awk '{if ($2 >= $1) print $3}' | sort -nr | head -n 1)
+	echo "${size:-0}"
 }
 
 format_part_number() {
