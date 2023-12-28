@@ -427,6 +427,7 @@ fix_1s_parts() {
 		log_debug cgpt add -i "${p1s_n[$i]}" -b "$((gapstart + i))" -s 1 "$CRAP_DISK"
 		cgpt add -i "${p1s_n[$i]}" -b "$((gapstart + i))" -s 1 "$CRAP_DISK"
 	done
+	partx -u "$CRAP_DISK"
 
 	check_1s_parts_need_fix
 	if [ -z "$NEEDS_1S_FIX" ]; then
@@ -436,6 +437,7 @@ fix_1s_parts() {
 		echo -e "Current partition table is shown below:${COLOR_RESET}"
 		sfdisk -l "$CRAP_DISK"
 	fi
+	refresh_stateful
 	wait_on_enter_menu
 }
 
