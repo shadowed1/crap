@@ -1,37 +1,62 @@
 # CRAP
 
-Note: This is a project forked from ([github.com/reynhout/chrx](https://github.com/reynhout/chrx)). We are simply updating it to remove the Linux installation feature as it is outdated. Instead, CRAP is only a partitioning tool for chromeOS. This does not have the Linux Install feature, you will have to linux yourself. 
+Note: This project was originally forked from [reynhout/chrx](https://github.com/reynhout/chrx).
+The project has been completely rewritten since, and is now only a partitioning tool.
+It does not include any feature to install an alternate operating system, you must do that yourself.
 
-| ------------ | ---------- |
-|**works on**|All Chromebook models. See [Docs](https://chrultrabook.github.io/docs/docs/supported-devices.html).|
+This tool works on all Chromebook models. See [documentation](https://chrultrabook.github.io/docs/docs/firmware/supported-devices.html).
 
+## Features
 
+#### Resize stateful partition
 
+Resize the user-data partition on the disk to make room for an alternate OS.
+This script supports non-destructive resizing of the filesystem, so you won't
+have to worry about your data being wiped!
 
-<a name="usage"></a>
-## usage
+#### Reorder 1-sector partitions
 
-Installing Linux via **chrx** onto a new (or freshly recovered) Chromebook
+Fix a bug that causes libparted to error and be unable to detect existing partitions.
+If you're installing an operating system that uses an affected version of libparted, you will need
+to do this or the installer will fail to recognize existing partitions, which effectively wipes
+the disk when you install it.  
+See [this bug](https://lists.gnu.org/archive/html/bug-parted/2022-04/msg00004.html) for more info.
 
-- The first phase reserves space on your storage device for
-the new operating system, **and then reboots**.
+## Usage
 
+Running this script does not require you to have valid RW_LEGACY firmware installed,
+but this is currently the recommended method for dual booting another operating system alongside ChromeOS on x86_64-based hardware.
+See [MrChromebox's Firmware Utility Script](https://mrchromebox.tech/#fwscript) for installing RW_LEGACY firmware.
 
+### Running the script
 
-<a name="step-by-step"></a>
-### step-by-step
+1. Ensure you're in developer mode and connected to WiFi.
+2. Open VT2 using `[ Ctrl ] [ Alt ] [ → ]` (F2), login as `root`
+	- Note: the script cannot be run with crosh on any version of ChromeOS.
+	- Note 2: you can also run the script while booted into your alternate OS!
+3. Run the script!
+	- Run `bash <(curl https://raw.githubusercontent.com/chrultrabook/crap/master/crap)`
+	- URL shortened version: `bash <(curl -L https://tinyurl.com/crap-cb-01)`
+4. The script will walk you through the steps to make room for an alternate OS.
 
-1. **Enable [Developer Mode](http://www.chromium.org/chromium-os/developer-information-for-chrome-os-devices)**
-    * (for most models, press `ESC+F3(Refresh)+Power`)
-1. **Boot ChromeOS and open Terminal**
-    * Press `CTRL+D` at the white "ChromeOS is missing or damaged" (or "OS verification is OFF") screen
-    * Configure Wi-Fi and log in (Guest account is fine)
-    * Open ChromeOS Terminal by pressing `CTRL+ALT+T`, and entering `shell` at the prompt
-1. **Update firmware, if necessary** -- see [chromebooks](#chromebooks)
-    * Open Virtual Terminal 2 using ```[ Ctrl ] [ Alt ] [ → ]```
-    * run MrChromebox's Firmware Utility Script see ([Firmware Script](https://mrchromebox.tech/#fwscript))
-    * Select ```Install/Update RW_LEGACY Firmware```
-1. **Download and run chrx**
-    * *add install link here*
-1. **Follow on-screen instructions** to allocate storage space for Linux
-    * CRAP will suggest dedicating as much space as possible to Linux, and as little as necessary for ChromeOS. Choose your allocation ratio according to your personal requirements and preferences!
+## Screenshots
+
+CRAP - main menu
+
+![Screenshot - CRAP - main menu](/screenshots/screenshot01.png)
+
+CRAP - resizing stateful partition
+
+![Screenshot - CRAP - resizing stateful partition](/screenshots/screenshot02.png)
+
+## Notes
+
+* We do NOT EVER use the KERN-C or ROOT-C partitions NO
+
+## Acknowledgements
+
+- [MrChromebox/scripts](https://github.com/MrChromebox/scripts), for reference
+- [chromeos-common](https://chromium.googlesource.com/chromiumos/platform2/+/main/chromeos-common-script/share/chromeos-common.sh), for some adapted code (namely get_largest_nvme_namespace)
+- [reynhout/chrx](https://github.com/reynhout/chrx)'s setup-storage script, for reference
+- bendavis78's [resize-stateful-partition](https://gist.github.com/bendavis78/5929b46efd26232d7e9e), for reference
+- honorable mention: [ethanmad/chromeos-resize](https://github.com/ethanmad/chromeos-resize)

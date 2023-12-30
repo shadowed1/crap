@@ -1,6 +1,0 @@
-## begin chrx additions
-##
-
-## reduce swappiness for SSD (60 is default for HDD)
-vm.swappiness=10
-## end chrx additions
