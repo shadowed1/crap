@@ -4,7 +4,7 @@ Note: This project was originally forked from [reynhout/chrx](https://github.com
 The project has been completely rewritten since, and is now only a partitioning tool.
 It does not include any feature to install an alternate operating system, you must do that yourself.
 
-This tool works on all Chromebook models. See [documentation](https://chrultrabook.github.io/docs/docs/firmware/supported-devices.html).
+This tool works on all Chromebook models. See [documentation](https://docs.chrultrabook.com/docs/firmware/supported-devices.html).
 
 ## Features
 
