@@ -17,7 +17,7 @@
 set -eE
 
 # variable variables
-SCRIPT_DATE="[2023-12-28]"
+SCRIPT_DATE="[2024-01-13]"
 
 # optional variables
 [ -z "$CRAP_TESTING" ] && CRAP_TESTING=0
@@ -46,17 +46,17 @@ log_debug() {
 
 suppress() {
 	if [ "$CRAP_DEBUG" -eq 1 ]; then
-		$@
+		"$@"
 	else
-		$@ &>/dev/null
+		"$@" &>/dev/null
 	fi
 }
 
 suppress_out() {
 	if [ "$CRAP_DEBUG" -eq 1 ]; then
-		$@
+		"$@"
 	else
-		$@ >/dev/null
+		"$@" >/dev/null
 	fi
 }
 
