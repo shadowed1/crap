@@ -22,6 +22,10 @@ to do this or the installer will fail to recognize existing partitions, which ef
 the disk when you install it.  
 See [this bug](https://lists.gnu.org/archive/html/bug-parted/2022-04/msg00004.html) for more info.
 
+#### Re-create stateful filesystem
+
+Reset the ChromeOS user data partition to a factory state.
+
 ## Usage
 
 Running this script does not require you to have valid RW_LEGACY firmware installed,
@@ -31,8 +35,8 @@ See [MrChromebox's Firmware Utility Script](https://mrchromebox.tech/#fwscript) 
 ### Running the script
 
 1. Ensure you're in developer mode and connected to WiFi.
-2. Open VT2 using `[ Ctrl ] [ Alt ] [ → ]` (F2), login as `root`
-	- Note: the script cannot be run with crosh on any version of ChromeOS.
+2. Open VT2 using `[ Ctrl ] [ Alt ] [ → ]` (F2), login as `root` (not `chronos`)
+	- Note: the script *cannot* be run with crosh on any version of ChromeOS.
 	- Note 2: you can also run the script while booted into your alternate OS!
 3. Run the script!
 	- Run `bash <(curl https://raw.githubusercontent.com/chrultrabook/crap/master/crap)`
