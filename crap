@@ -222,7 +222,7 @@ print_disk_info() {
 
 resize_stateful_menu() {
 	local num_action new_bytes new_sectors new_blocks resize2fs_out
-	if ! unmount_stateful ; then
+	if ! unmount_stateful; then
 		clear_screen
 		echo -e "${COLOR_RED_B}Failed to unmount stateful."
 		echo -e "You may proceed, but shrinking of the partition will DESTROY YOUR DATA.${COLOR_RESET}"
@@ -329,7 +329,7 @@ resize_stateful_menu() {
 			partx -u -n 1 "$CRAP_DISK"
 			# re-create stateful if necessary and possible
 			if [ "$STATEFUL_VALID_FS" -eq 0 ] && [ "$STATEFUL_MOUNTED" -eq 0 ]; then
-				wipe_stateful
+				wipe_stateful || :
 			fi
 		fi
 		echo -e "${COLOR_GREEN_B}Success.${COLOR_RESET}"
@@ -440,7 +440,7 @@ fix_1s_parts() {
 	if [ -z "$NEEDS_1S_FIX" ]; then
 		echo -e "${COLOR_GREEN_B}Success.${COLOR_RESET}"
 	else
-		echo -e "${COLOR_RED_B}An error occured and the partitions were not properly reordered."
+		echo -e "${COLOR_RED_B}An error occurred and the partitions were not properly reordered."
 		echo -e "Current partition table is shown below:${COLOR_RESET}"
 		sfdisk -l "$CRAP_DISK"
 	fi
@@ -466,7 +466,7 @@ check_1s_parts_prompt() {
 
 wipe_stateful() {
 	local stateful_mnt
-	suppress mkfs.ext4 -F -b 4096 -L H-STATE "$STATEFUL_PART"
+	suppress mkfs.ext4 -F -b 4096 -L H-STATE "$STATEFUL_PART" || return 1
 	stateful_mnt=$(mktemp -d)
 	mount "$STATEFUL_PART" "$stateful_mnt"
 	touch "$stateful_mnt/.developer_mode"
@@ -475,6 +475,12 @@ wipe_stateful() {
 }
 
 recreate_stateful() {
+	if ! unmount_stateful; then
+		clear_screen
+		echo -e "${COLOR_RED_B}Failed to unmount stateful. Cannot continue."
+		wait_on_enter_menu
+		return
+	fi
 	clear_screen
 	echo -e "This will erase all data on ${STATEFUL_PART}"
 	echo -e "${COLOR_CYAN_B}Continue? ${COLOR_YELLOW_B}(y/N)${COLOR_RESET}"
@@ -486,8 +492,9 @@ recreate_stateful() {
 	if wipe_stateful; then
 		echo -e "${COLOR_GREEN_B}Success.${COLOR_RESET}"
 	else
-		echo -e "${COLOR_RED_B}An error occured and stateful was not re-created.${COLOR_RESET}"
+		echo -e "${COLOR_RED_B}An error occurred and stateful was not re-created.${COLOR_RESET}"
 	fi
+	refresh_stateful
 	wait_on_enter_menu
 }
 
